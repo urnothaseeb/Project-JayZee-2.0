@@ -13,7 +13,7 @@ class QuickAddWidget : AppWidgetProvider() {
         for (widgetId in appWidgetIds) {
             val views = RemoteViews(context.packageName, R.layout.widget)
             val intent = Intent(context, MainActivity::class.java)
-                .putExtra(EXTRA_CAPTURE, true)
+                .putExtra(EXTRA_OPEN, OPEN_CAPTURE)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             val pi = PendingIntent.getActivity(
                 context, 2, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE

@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Bundle
 import android.speech.RecognizerIntent
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -33,6 +34,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -41,8 +43,10 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -65,6 +69,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -79,31 +84,33 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
     private val tick = mutableIntStateOf(0)
-    private val openCapture = mutableStateOf(false)
+    private val launch = mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Scheduler.ensureChannels(this)
         Scheduler.rescheduleAll(this)
-        if (intent?.getBooleanExtra(EXTRA_CAPTURE, false) == true) openCapture.value = true
+        launch.value = intent?.getStringExtra(EXTRA_OPEN)
         enableEdgeToEdge()
         setContent {
             JayZeeTheme {
-                App(this, tick.intValue, openCapture)
+                App(this, tick.intValue, launch)
             }
         }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (intent.getBooleanExtra(EXTRA_CAPTURE, false)) openCapture.value = true
+        intent.getStringExtra(EXTRA_OPEN)?.let { launch.value = it }
     }
 
     override fun onResume() {
@@ -145,14 +152,54 @@ private fun pickNewTime(activity: Context, item: Item, onPicked: (Long, Boolean)
     }
 }
 
+/** What the add/edit box should open with, and what to do once it is saved. */
+data class EditorRequest(
+    val existing: Item? = null,
+    val initialText: String = "",
+    val initialType: String? = null,
+    val onSaved: () -> Unit = {},
+)
+
+/** Everything a card can do to an item. Passed down so every screen behaves the same. */
+class Actions(
+    val activity: Context,
+    val changed: () -> Unit,
+    val openEditor: (EditorRequest) -> Unit,
+) {
+    private val app: Context get() = activity.applicationContext
+
+    fun done(item: Item) { Repo.markDone(app, item); changed() }
+    fun reopen(item: Item) { Repo.reopen(app, item); changed() }
+    fun edit(item: Item) { openEditor(EditorRequest(existing = item)) }
+    fun move(item: Item) {
+        pickNewTime(activity, item) { due, hasTime ->
+            Repo.reschedule(app, item, due, hasTime)
+            changed()
+        }
+    }
+    fun firstStep(item: Item, step: String) {
+        Repo.save(app, item.copy(firstStep = step.trim()))
+        changed()
+    }
+    /** Places a task on a day of the weekly plan (0 = not placed). */
+    fun plan(item: Item, day: Long) {
+        Repo.save(app, item.copy(plannedDay = day))
+        changed()
+    }
+}
+
+val ListPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 104.dp)
+
 @Composable
-fun App(activity: Context, tick: Int, openCapture: MutableState<Boolean>) {
+fun App(activity: Context, tick: Int, launch: MutableState<String?>) {
     val appContext = activity.applicationContext
     var version by remember { mutableIntStateOf(0) }
-    val items = remember(tick, version) { Db.get(appContext).all() }
-    val changed: () -> Unit = { version = version + 1 }
+    val stamp = tick + version
+    val items = remember(stamp) { Db.get(appContext).all() }
     var tab by remember { mutableIntStateOf(0) }
-    var editing by remember { mutableStateOf<Item?>(null) }
+    var overlay by remember { mutableStateOf("") }
+    var request by remember { mutableStateOf<EditorRequest?>(null) }
+    val actions = remember { Actions(activity, { version = version + 1 }, { request = it }) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -165,112 +212,185 @@ fun App(activity: Context, tick: Int, openCapture: MutableState<Boolean>) {
         permissionLauncher.launch(wanted.toTypedArray())
     }
 
-    val onDone: (Item) -> Unit = { Repo.markDone(appContext, it); changed() }
-    val onReopen: (Item) -> Unit = { Repo.reopen(appContext, it); changed() }
-    val onMove: (Item) -> Unit = { item ->
-        pickNewTime(activity, item) { due, hasTime ->
-            Repo.reschedule(appContext, item, due, hasTime)
-            changed()
+    // Opened from the widget or from a prompt notification.
+    val launchTarget = launch.value
+    LaunchedEffect(launchTarget) {
+        when (launchTarget) {
+            OPEN_CAPTURE -> request = EditorRequest()
+            OPEN_WEEK -> { overlay = ""; tab = 2 }
+            OPEN_NIGHTLY -> overlay = OPEN_NIGHTLY
+        }
+        if (launchTarget != null) launch.value = null
+    }
+
+    // The inbox refreshes by itself while it is open, so new notifications show up.
+    LaunchedEffect(tab, overlay) {
+        if (tab == 1 && overlay.isEmpty()) {
+            while (true) {
+                delay(4000)
+                version = version + 1
+            }
         }
     }
-    val onFirstStep: (Item, String) -> Unit = { item, step ->
-        Repo.save(appContext, item.copy(firstStep = step.trim()))
-        changed()
-    }
-    val onEdit: (Item) -> Unit = { editing = it }
+
+    BackHandler(enabled = overlay.isNotEmpty()) { overlay = "" }
 
     val scheme = MaterialTheme.colorScheme
-    Scaffold(
-        containerColor = scheme.background,
-        bottomBar = {
-            val navColors = NavigationBarItemDefaults.colors(
-                indicatorColor = scheme.primaryContainer,
-                selectedIconColor = scheme.onPrimaryContainer,
-            )
-            NavigationBar(containerColor = scheme.surface) {
-                NavigationBarItem(
-                    selected = tab == 0,
-                    onClick = { tab = 0 },
-                    icon = { Icon(Icons.Default.Home, contentDescription = null) },
-                    label = { Text("Today") },
-                    colors = navColors
+    if (overlay == "review") {
+        ReviewScreen(activity, stamp, actions, onClose = { overlay = "" })
+    } else if (overlay == OPEN_NIGHTLY) {
+        NightlyScreen(activity, items, actions, onFinished = { review -> overlay = if (review) "review" else "" })
+    } else {
+        Scaffold(
+            containerColor = scheme.background,
+            bottomBar = {
+                val navColors = NavigationBarItemDefaults.colors(
+                    indicatorColor = scheme.primaryContainer,
+                    selectedIconColor = scheme.onPrimaryContainer,
                 )
-                NavigationBarItem(
-                    selected = tab == 1,
-                    onClick = { tab = 1 },
-                    icon = { Icon(Icons.Default.Menu, contentDescription = null) },
-                    label = { Text("Everything") },
-                    colors = navColors
+                NavigationBar(containerColor = scheme.surface) {
+                    NavigationBarItem(
+                        selected = tab == 0, onClick = { tab = 0 },
+                        icon = { Icon(Icons.Default.Home, contentDescription = null) },
+                        label = { Text("Today") }, colors = navColors
+                    )
+                    NavigationBarItem(
+                        selected = tab == 1, onClick = { tab = 1 },
+                        icon = { Icon(Icons.Default.Notifications, contentDescription = null) },
+                        label = { Text("Inbox") }, colors = navColors
+                    )
+                    NavigationBarItem(
+                        selected = tab == 2, onClick = { tab = 2 },
+                        icon = { Icon(Icons.Default.DateRange, contentDescription = null) },
+                        label = { Text("Week") }, colors = navColors
+                    )
+                    NavigationBarItem(
+                        selected = tab == 3, onClick = { tab = 3 },
+                        icon = { Icon(Icons.Default.Menu, contentDescription = null) },
+                        label = { Text("All") }, colors = navColors
+                    )
+                }
+            },
+            floatingActionButton = {
+                ExtendedFloatingActionButton(
+                    onClick = { request = EditorRequest() },
+                    containerColor = scheme.primary,
+                    contentColor = scheme.onPrimary,
+                    icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                    text = { Text("Add") }
                 )
             }
-        },
-        floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { openCapture.value = true },
-                containerColor = scheme.primary,
-                contentColor = scheme.onPrimary,
-                icon = { Icon(Icons.Default.Add, contentDescription = null) },
-                text = { Text("Add") }
-            )
-        }
-    ) { padding ->
-        Box(Modifier.padding(padding).fillMaxSize()) {
-            val sections = if (tab == 0) {
-                Planner.today(items)
-            } else {
-                val open = items.filter { !it.done }
-                listOf(
-                    Planner.Section("Reminders", open.filter { it.type == TYPE_REMINDER }),
-                    Planner.Section("Tasks", open.filter { it.type == TYPE_TASK }),
-                    Planner.Section("Notes", open.filter { it.type == TYPE_NOTE }),
-                    Planner.Section("Done", items.filter { it.done }.sortedByDescending { it.doneAt }.take(20)),
-                ).filter { it.items.isNotEmpty() }
-            }
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 104.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                item(key = "top") {
-                    if (tab == 0) TodayHeader(items, sections) else EverythingHeader(items)
-                }
-                if (sections.isEmpty()) {
-                    item(key = "empty") { EmptyState(tab == 0) }
-                }
-                sections.forEach { section ->
-                    item(key = "header-" + section.title) {
-                        SectionHeader(section.title, section.items.size, section.title == "Overdue" || section.title == "Slipping")
-                    }
-                    items(section.items, key = { it.id }) { item ->
-                        ItemCard(item, onDone, onReopen, onMove, onEdit, onFirstStep)
-                    }
+        ) { padding ->
+            Box(Modifier.padding(padding).fillMaxSize()) {
+                when (tab) {
+                    0 -> TodayTab(activity, items, actions, onPlan = { tab = 2 }, onNightly = { overlay = OPEN_NIGHTLY })
+                    1 -> InboxTab(activity, stamp, actions, onReview = { overlay = "review" })
+                    2 -> WeekTab(activity, items, actions)
+                    else -> EverythingTab(items, actions)
                 }
             }
         }
     }
 
-    if (openCapture.value) {
-        EditorDialog(
-            activity = activity,
-            existing = null,
-            onDismiss = { openCapture.value = false },
-            onSave = { Repo.save(appContext, it); openCapture.value = false; changed() },
-            onDelete = { }
-        )
-    }
-    val current = editing
-    if (current != null) {
-        EditorDialog(
-            activity = activity,
-            existing = current,
-            onDismiss = { editing = null },
-            onSave = { Repo.save(appContext, it); editing = null; changed() },
-            onDelete = { Repo.delete(appContext, it); editing = null; changed() }
-        )
+    val req = request
+    if (req != null) {
+        key(req) {
+            EditorDialog(
+                activity = activity,
+                existing = req.existing,
+                initialText = req.initialText,
+                initialType = req.initialType,
+                onDismiss = { request = null },
+                onSave = { Repo.save(appContext, it); request = null; req.onSaved(); actions.changed() },
+                onDelete = { Repo.delete(appContext, it); request = null; actions.changed() }
+            )
+        }
     }
 }
 
-private fun typeLabel(type: String): String = when (type) {
+fun LazyListScope.sectionList(sections: List<Planner.Section>, actions: Actions) {
+    sections.forEach { section ->
+        item(key = "header-" + section.title) {
+            SectionHeader(section.title, section.items.size, section.title == "Overdue" || section.title == "Slipping")
+        }
+        items(section.items, key = { it.id }) { item -> ItemCard(item, actions) }
+    }
+}
+
+@Composable
+fun TodayTab(activity: Context, items: List<Item>, actions: Actions, onPlan: () -> Unit, onNightly: () -> Unit) {
+    val ctx = activity.applicationContext
+    val sections = Planner.today(items)
+    val now = LocalDateTime.now()
+    val needsPlan = !Planner.hasPlan(ctx)
+    // Offered once the day's list is empty (after uni hours), or from the nightly prompt time.
+    val nightlyDue = !Planner.reviewedTonight(ctx) &&
+        ((sections.isEmpty() && now.hour >= 17) || !now.toLocalTime().isBefore(NIGHTLY_PROMPT_TIME))
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = ListPadding,
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item(key = "top") { TodayHeader(items, sections) }
+        if (needsPlan) {
+            item(key = "plan") {
+                Banner(
+                    if (now.dayOfWeek == DayOfWeek.SUNDAY) "Next week has no plan yet." else "This week has no plan yet.",
+                    "Plan the week", onPlan
+                )
+            }
+        }
+        if (nightlyDue) {
+            item(key = "nightly") { Banner("Wrapping up? Check tomorrow's plan.", "Review tomorrow", onNightly) }
+        }
+        if (sections.isEmpty()) item(key = "empty") { EmptyState(true) }
+        sectionList(sections, actions)
+    }
+}
+
+@Composable
+fun EverythingTab(items: List<Item>, actions: Actions) {
+    val open = items.filter { !it.done }
+    val sections = listOf(
+        Planner.Section("Reminders", open.filter { it.type == TYPE_REMINDER }),
+        Planner.Section("Tasks", open.filter { it.type == TYPE_TASK }),
+        Planner.Section("Notes", open.filter { it.type == TYPE_NOTE }),
+        Planner.Section("Done", items.filter { it.done }.sortedByDescending { it.doneAt }.take(20)),
+    ).filter { it.items.isNotEmpty() }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = ListPadding,
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item(key = "top") { EverythingHeader(items) }
+        if (sections.isEmpty()) item(key = "empty") { EmptyState(false) }
+        sectionList(sections, actions)
+    }
+}
+
+@Composable
+fun Banner(text: String, button: String, onClick: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(scheme.secondaryContainer)
+            .padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 12.dp)
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = scheme.onSecondaryContainer,
+            modifier = Modifier.weight(1f)
+        )
+        Spacer(Modifier.width(10.dp))
+        Pill(button, scheme.secondary, scheme.onSecondary, onClick)
+    }
+}
+
+fun typeLabel(type: String): String = when (type) {
     TYPE_REMINDER -> "Reminder"
     TYPE_TASK -> "Task"
     else -> "Note"
@@ -406,11 +526,9 @@ fun Pill(text: String, container: Color, content: Color, onClick: (() -> Unit)? 
 @Composable
 fun ItemCard(
     item: Item,
-    onDone: (Item) -> Unit,
-    onReopen: (Item) -> Unit,
-    onMove: (Item) -> Unit,
-    onEdit: (Item) -> Unit,
-    onFirstStep: (Item, String) -> Unit,
+    actions: Actions,
+    extraLabel: String = "",
+    onExtra: () -> Unit = {},
 ) {
     val scheme = MaterialTheme.colorScheme
     val nowMs = System.currentTimeMillis()
@@ -424,7 +542,7 @@ fun ItemCard(
         else -> scheme.outline
     }
     Card(
-        onClick = { onEdit(item) },
+        onClick = { actions.edit(item) },
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = scheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
@@ -442,7 +560,7 @@ fun ItemCard(
                     Modifier
                         .size(40.dp)
                         .clip(CircleShape)
-                        .clickable { if (item.done) onReopen(item) else onDone(item) },
+                        .clickable { if (item.done) actions.reopen(item) else actions.done(item) },
                     contentAlignment = Alignment.Center
                 ) {
                     Box(
@@ -502,7 +620,7 @@ fun ItemCard(
                             singleLine = true,
                             modifier = Modifier.weight(1f)
                         )
-                        TextButton(onClick = { if (step.isNotBlank()) onFirstStep(item, step) }) { Text("Save") }
+                        TextButton(onClick = { if (step.isNotBlank()) actions.firstStep(item, step) }) { Text("Save") }
                     }
                 }
                 if (!item.done && item.type != TYPE_NOTE) {
@@ -510,7 +628,8 @@ fun ItemCard(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier.padding(top = 8.dp).horizontalScroll(rememberScrollState())
                     ) {
-                        Pill("New time", scheme.surfaceVariant, scheme.onSurface) { onMove(item) }
+                        if (extraLabel.isNotEmpty()) Pill(extraLabel, scheme.primaryContainer, scheme.onPrimaryContainer, onExtra)
+                        Pill("New time", scheme.surfaceVariant, scheme.onSurface) { actions.move(item) }
                         if (item.type == TYPE_TASK && item.startBy > 0) {
                             Pill("Start " + formatDay(item.startBy), scheme.secondaryContainer, scheme.onSecondaryContainer)
                         }
@@ -534,12 +653,14 @@ fun ItemCard(
 fun EditorDialog(
     activity: Context,
     existing: Item?,
+    initialText: String = "",
+    initialType: String? = null,
     onDismiss: () -> Unit,
     onSave: (Item) -> Unit,
     onDelete: (Item) -> Unit,
 ) {
-    var text by remember { mutableStateOf(existing?.title ?: "") }
-    var typeChoice by remember { mutableStateOf<String?>(existing?.type) }
+    var text by remember { mutableStateOf(existing?.title ?: initialText) }
+    var typeChoice by remember { mutableStateOf<String?>(existing?.type ?: initialType) }
     var dateChoice by remember {
         mutableStateOf<LocalDate?>(if (existing != null && existing.dueAt > 0) existing.dueAt.toLdt().toLocalDate() else null)
     }

@@ -20,7 +20,12 @@ const val ACTION_SNOOZE = "com.haseeb.jayzee.SNOOZE"
 const val ACTION_DISMISSED = "com.haseeb.jayzee.DISMISSED"
 const val ACTION_BRIEF = "com.haseeb.jayzee.BRIEF"
 const val EXTRA_ID = "id"
-const val EXTRA_CAPTURE = "capture"
+const val ACTION_WEEKLY = "com.haseeb.jayzee.WEEKLY"
+const val ACTION_NIGHTLY = "com.haseeb.jayzee.NIGHTLY"
+const val EXTRA_OPEN = "open"
+const val OPEN_CAPTURE = "capture"
+const val OPEN_WEEK = "week"
+const val OPEN_NIGHTLY = "nightly"
 
 private const val CH_REMINDERS = "reminders"
 private const val CH_CRITICAL = "critical"
@@ -29,6 +34,12 @@ private const val BRIEF_NOTIFICATION_ID = 2_000_000_000
 
 /** Wake-up time for the morning brief. */
 val BRIEF_TIME: LocalTime = LocalTime.of(7, 0)
+
+/** When the app asks for a weekly plan if the week has none. */
+val WEEKLY_PROMPT_TIME: LocalTime = LocalTime.of(18, 0)
+
+/** When the nightly review is offered if it has not been done yet. */
+val NIGHTLY_PROMPT_TIME: LocalTime = LocalTime.of(21, 30)
 
 /** A swiped-away reminder comes back after this long. */
 private const val RETURN_AFTER_MS = 10 * 60 * 1000L
@@ -51,7 +62,7 @@ object Scheduler {
         critical.enableVibration(true)
         nm.createNotificationChannel(critical)
         nm.createNotificationChannel(
-            NotificationChannel(CH_BRIEF, "Morning brief", NotificationManager.IMPORTANCE_DEFAULT)
+            NotificationChannel(CH_BRIEF, "Brief and planning prompts", NotificationManager.IMPORTANCE_DEFAULT)
         )
     }
 
@@ -100,21 +111,67 @@ object Scheduler {
         scheduleDailyBrief(ctx)
     }
 
-    fun scheduleDailyBrief(ctx: Context) {
+    private fun scheduleDaily(ctx: Context, action: String, at: LocalTime, slot: Int) {
         val now = LocalDateTime.now()
-        var next = now.toLocalDate().atTime(BRIEF_TIME)
+        var next = now.toLocalDate().atTime(at)
         if (!next.isAfter(now)) next = next.plusDays(1)
-        setAlarm(ctx, next.toMillis(), broadcast(ctx, ACTION_BRIEF, 0, 5))
+        setAlarm(ctx, next.toMillis(), broadcast(ctx, action, 0, slot))
+    }
+
+    fun scheduleDailyBrief(ctx: Context) {
+        scheduleDaily(ctx, ACTION_BRIEF, BRIEF_TIME, 5)
+        scheduleDaily(ctx, ACTION_WEEKLY, WEEKLY_PROMPT_TIME, 6)
+        scheduleDaily(ctx, ACTION_NIGHTLY, NIGHTLY_PROMPT_TIME, 7)
+    }
+
+    private fun prompt(ctx: Context, notificationId: Int, title: String, text: String, open: String) {
+        ensureChannels(ctx)
+        val n = NotificationCompat.Builder(ctx, CH_BRIEF)
+            .setSmallIcon(R.drawable.ic_stat)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setAutoCancel(true)
+            .setContentIntent(openApp(ctx, open))
+            .build()
+        ctx.getSystemService(NotificationManager::class.java).notify(notificationId, n)
+    }
+
+    /** Asks for a weekly plan when the week has none (Sunday: for the week ahead). */
+    fun showWeeklyPrompt(ctx: Context) {
+        if (Planner.hasPlan(ctx)) return
+        val sunday = java.time.LocalDate.now().dayOfWeek == java.time.DayOfWeek.SUNDAY
+        prompt(
+            ctx, BRIEF_NOTIFICATION_ID + 1,
+            if (sunday) "Plan next week" else "This week has no plan yet",
+            "Place your tasks on days. It takes a couple of minutes.",
+            OPEN_WEEK
+        )
+    }
+
+    /** Offers the nightly review, then the muted-notification backlog. */
+    fun showNightlyPrompt(ctx: Context) {
+        if (Planner.reviewedTonight(ctx)) return
+        val muted = Db.get(ctx).countByStatus(N_MUTED)
+        val tail = if (muted > 0) " Then $muted muted notifications to look through." else ""
+        prompt(ctx, BRIEF_NOTIFICATION_ID + 2, "Review tomorrow", "Check tomorrow's plan before bed.$tail", OPEN_NIGHTLY)
     }
 
     private fun notificationId(id: Long): Int = (id % 1_000_000_000L).toInt()
 
-    private fun openApp(ctx: Context): PendingIntent =
-        PendingIntent.getActivity(
-            ctx, 1,
-            Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    private fun openApp(ctx: Context, open: String = ""): PendingIntent {
+        val intent = Intent(ctx, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        if (open.isNotEmpty()) intent.putExtra(EXTRA_OPEN, open)
+        val code = when (open) {
+            OPEN_WEEK -> 11
+            OPEN_NIGHTLY -> 12
+            else -> 1
+        }
+        return PendingIntent.getActivity(
+            ctx, code, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+    }
 
     fun showReminder(ctx: Context, item: Item) {
         ensureChannels(ctx)
@@ -209,6 +266,14 @@ class AlarmReceiver : BroadcastReceiver() {
             Intent.ACTION_BOOT_COMPLETED -> Scheduler.rescheduleAll(ctx)
             ACTION_BRIEF -> {
                 Scheduler.showBrief(ctx)
+                Scheduler.scheduleDailyBrief(ctx)
+            }
+            ACTION_WEEKLY -> {
+                Scheduler.showWeeklyPrompt(ctx)
+                Scheduler.scheduleDailyBrief(ctx)
+            }
+            ACTION_NIGHTLY -> {
+                Scheduler.showNightlyPrompt(ctx)
                 Scheduler.scheduleDailyBrief(ctx)
             }
             ACTION_FIRE -> {

@@ -69,6 +69,7 @@ object Planner {
     /** What the Today screen and the morning brief show, in order. Each item appears once. */
     fun today(all: List<Item>, now: LocalDateTime = LocalDateTime.now()): List<Section> {
         val nowMs = now.toMillis()
+        val startOfToday = now.toLocalDate().atStartOfDay().toMillis()
         val endOfToday = now.toLocalDate().plusDays(1).atStartOfDay().toMillis() - 1
         val open = all.filter { !it.done && it.type != TYPE_NOTE }
         val shown = HashSet<Long>()
@@ -81,8 +82,45 @@ object Planner {
             take("Overdue") { it.dueAt in 1 until nowMs },
             take("Slipping") { it.rescheduleCount >= SLIPPING_AFTER },
             take("Reminders today") { it.type == TYPE_REMINDER && it.dueAt in nowMs..endOfToday },
-            take("Start today") { it.type == TYPE_TASK && it.startBy in 1..endOfToday },
+            take("Planned today") { it.type == TYPE_TASK && it.plannedDay in startOfToday..endOfToday },
+            // A task you placed on a later day does not nag you before then.
+            take("Start today") { it.type == TYPE_TASK && it.startBy in 1..endOfToday && it.plannedDay <= endOfToday },
             take("Due today") { it.type == TYPE_TASK && it.dueAt in nowMs..endOfToday },
         ).filter { it.items.isNotEmpty() }
+    }
+
+    /** Everything that lands on tomorrow: reminders, placed tasks, tasks due or that must start. */
+    fun tomorrow(all: List<Item>, now: LocalDateTime = LocalDateTime.now()): List<Item> {
+        val start = now.toLocalDate().plusDays(1).atStartOfDay().toMillis()
+        val end = now.toLocalDate().plusDays(2).atStartOfDay().toMillis() - 1
+        return all.filter { !it.done && it.type != TYPE_NOTE }.filter {
+            when (it.type) {
+                TYPE_REMINDER -> it.dueAt in start..end
+                else -> it.plannedDay in start..end || it.dueAt in start..end ||
+                    (it.plannedDay == 0L && it.startBy in 1..end && it.dueAt > end)
+            }
+        }
+    }
+
+    /**
+     * The Monday of the week being planned. On a Sunday that is the next day,
+     * because Sunday is when the coming week gets planned.
+     */
+    fun weekStart(today: LocalDate = LocalDate.now()): LocalDate =
+        if (today.dayOfWeek == DayOfWeek.SUNDAY) today.plusDays(1)
+        else today.with(java.time.temporal.TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+
+    fun hasPlan(ctx: android.content.Context, today: LocalDate = LocalDate.now()): Boolean =
+        Prefs.get(ctx, "plan_week") == weekStart(today).toString()
+
+    fun confirmPlan(ctx: android.content.Context, today: LocalDate = LocalDate.now()) {
+        Prefs.set(ctx, "plan_week", weekStart(today).toString())
+    }
+
+    fun reviewedTonight(ctx: android.content.Context): Boolean =
+        Prefs.get(ctx, "reviewed_day") == LocalDate.now().toString()
+
+    fun confirmReview(ctx: android.content.Context) {
+        Prefs.set(ctx, "reviewed_day", LocalDate.now().toString())
     }
 }
