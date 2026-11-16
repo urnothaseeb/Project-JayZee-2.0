@@ -98,7 +98,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Scheduler.ensureChannels(this)
-        Scheduler.rescheduleAll(this)
+        Scheduler.rescheduleAll(this, includeOverdue = false)
         launch.value = intent?.getStringExtra(EXTRA_OPEN)
         enableEdgeToEdge()
         setContent {

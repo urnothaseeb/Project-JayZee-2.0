@@ -106,8 +106,13 @@ object Scheduler {
         setAlarm(ctx, System.currentTimeMillis() + RETURN_AFTER_MS, broadcast(ctx, ACTION_FIRE, id, 0))
     }
 
-    fun rescheduleAll(ctx: Context) {
-        Db.get(ctx).all().forEach { schedule(ctx, it) }
+    /**
+     * Re-arms every alarm. After a restart, overdue reminders ring again; when the app is
+     * merely opened they are left alone so opening it never sets off a burst of alerts.
+     */
+    fun rescheduleAll(ctx: Context, includeOverdue: Boolean) {
+        val now = System.currentTimeMillis()
+        Db.get(ctx).all().forEach { if (includeOverdue || it.dueAt > now) schedule(ctx, it) }
         scheduleDailyBrief(ctx)
     }
 
@@ -263,7 +268,7 @@ class AlarmReceiver : BroadcastReceiver() {
         val ctx = context.applicationContext
         val id = intent.getLongExtra(EXTRA_ID, 0)
         when (intent.action) {
-            Intent.ACTION_BOOT_COMPLETED -> Scheduler.rescheduleAll(ctx)
+            Intent.ACTION_BOOT_COMPLETED -> Scheduler.rescheduleAll(ctx, includeOverdue = true)
             ACTION_BRIEF -> {
                 Scheduler.showBrief(ctx)
                 Scheduler.scheduleDailyBrief(ctx)
