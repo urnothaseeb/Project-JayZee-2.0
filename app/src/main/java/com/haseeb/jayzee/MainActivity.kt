@@ -55,6 +55,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -74,6 +75,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
@@ -181,18 +183,24 @@ fun App(activity: Context, tick: Int, openCapture: MutableState<Boolean>) {
     Scaffold(
         containerColor = scheme.background,
         bottomBar = {
+            val navColors = NavigationBarItemDefaults.colors(
+                indicatorColor = scheme.primaryContainer,
+                selectedIconColor = scheme.onPrimaryContainer,
+            )
             NavigationBar(containerColor = scheme.surface) {
                 NavigationBarItem(
                     selected = tab == 0,
                     onClick = { tab = 0 },
                     icon = { Icon(Icons.Default.Home, contentDescription = null) },
-                    label = { Text("Today") }
+                    label = { Text("Today") },
+                    colors = navColors
                 )
                 NavigationBarItem(
                     selected = tab == 1,
                     onClick = { tab = 1 },
                     icon = { Icon(Icons.Default.Menu, contentDescription = null) },
-                    label = { Text("Everything") }
+                    label = { Text("Everything") },
+                    colors = navColors
                 )
             }
         },
@@ -276,6 +284,11 @@ fun TodayHeader(items: List<Item>, sections: List<Planner.Section>) {
     val open = sections.sumOf { it.items.size }
     val overdue = sections.firstOrNull { it.title == "Overdue" }?.items?.size ?: 0
     val doneToday = items.count { it.done && it.doneAt >= startOfToday }
+    // Dark mode gets a quieter card; light mode keeps the solid navy block.
+    val darkMode = scheme.background.luminance() < 0.5f
+    val heroBg = if (darkMode) scheme.primaryContainer else scheme.primary
+    val heroFg = if (darkMode) scheme.onPrimaryContainer else scheme.onPrimary
+    val barColor = if (darkMode) scheme.primary else scheme.onPrimary
     val greeting = when {
         now.hour < 12 -> "Good morning"
         now.hour < 18 -> "Good afternoon"
@@ -293,26 +306,28 @@ fun TodayHeader(items: List<Item>, sections: List<Planner.Section>) {
             Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(22.dp))
-                .background(scheme.primary)
+                .background(heroBg)
                 .padding(18.dp)
         ) {
             Text(
                 if (open == 0) "Nothing left for today" else "$open left for today",
                 style = MaterialTheme.typography.titleLarge,
-                color = scheme.onPrimary
+                color = heroFg
             )
             Text(
                 (if (overdue > 0) "$overdue overdue · " else "") + "$doneToday done today",
                 style = MaterialTheme.typography.bodyMedium,
-                color = scheme.onPrimary.copy(alpha = 0.8f)
+                color = heroFg.copy(alpha = 0.8f)
             )
             Spacer(Modifier.height(12.dp))
             val total = open + doneToday
             LinearProgressIndicator(
                 progress = { if (total == 0) 0f else doneToday.toFloat() / total.toFloat() },
                 modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)),
-                color = scheme.onPrimary,
-                trackColor = scheme.onPrimary.copy(alpha = 0.25f),
+                color = barColor,
+                trackColor = heroFg.copy(alpha = 0.18f),
+                gapSize = 0.dp,
+                drawStopIndicator = {},
             )
         }
     }
