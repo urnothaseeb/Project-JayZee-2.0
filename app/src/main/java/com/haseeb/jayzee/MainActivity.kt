@@ -14,30 +14,44 @@ import android.speech.RecognizerIntent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -46,11 +60,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
@@ -61,8 +70,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -78,15 +91,9 @@ class MainActivity : ComponentActivity() {
         Scheduler.ensureChannels(this)
         Scheduler.rescheduleAll(this)
         if (intent?.getBooleanExtra(EXTRA_CAPTURE, false) == true) openCapture.value = true
+        enableEdgeToEdge()
         setContent {
-            val dark = isSystemInDarkTheme()
-            val colors = when {
-                Build.VERSION.SDK_INT >= 31 && dark -> dynamicDarkColorScheme(this)
-                Build.VERSION.SDK_INT >= 31 -> dynamicLightColorScheme(this)
-                dark -> darkColorScheme()
-                else -> lightColorScheme()
-            }
-            MaterialTheme(colorScheme = colors) {
+            JayZeeTheme {
                 App(this, tick.intValue, openCapture)
             }
         }
@@ -170,10 +177,11 @@ fun App(activity: Context, tick: Int, openCapture: MutableState<Boolean>) {
     }
     val onEdit: (Item) -> Unit = { editing = it }
 
+    val scheme = MaterialTheme.colorScheme
     Scaffold(
-        topBar = { TopAppBar(title = { Text(if (tab == 0) "Today" else "Everything") }) },
+        containerColor = scheme.background,
         bottomBar = {
-            NavigationBar {
+            NavigationBar(containerColor = scheme.surface) {
                 NavigationBarItem(
                     selected = tab == 0,
                     onClick = { tab = 0 },
@@ -189,9 +197,13 @@ fun App(activity: Context, tick: Int, openCapture: MutableState<Boolean>) {
             }
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = { openCapture.value = true }) {
-                Icon(Icons.Default.Add, contentDescription = "Add")
-            }
+            ExtendedFloatingActionButton(
+                onClick = { openCapture.value = true },
+                containerColor = scheme.primary,
+                contentColor = scheme.onPrimary,
+                icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                text = { Text("Add") }
+            )
         }
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
@@ -208,26 +220,18 @@ fun App(activity: Context, tick: Int, openCapture: MutableState<Boolean>) {
             }
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 104.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                item(key = "top") {
+                    if (tab == 0) TodayHeader(items, sections) else EverythingHeader(items)
+                }
                 if (sections.isEmpty()) {
-                    item(key = "empty") {
-                        Text(
-                            if (tab == 0) "Nothing for today. Tap + to add something."
-                            else "Nothing here yet. Tap + to add something.",
-                            modifier = Modifier.padding(top = 24.dp)
-                        )
-                    }
+                    item(key = "empty") { EmptyState(tab == 0) }
                 }
                 sections.forEach { section ->
                     item(key = "header-" + section.title) {
-                        Text(
-                            section.title,
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(top = 8.dp)
-                        )
+                        SectionHeader(section.title, section.items.size, section.title == "Overdue" || section.title == "Slipping")
                     }
                     items(section.items, key = { it.id }) { item ->
                         ItemCard(item, onDone, onReopen, onMove, onEdit, onFirstStep)
@@ -265,6 +269,126 @@ private fun typeLabel(type: String): String = when (type) {
 }
 
 @Composable
+fun TodayHeader(items: List<Item>, sections: List<Planner.Section>) {
+    val scheme = MaterialTheme.colorScheme
+    val now = LocalDateTime.now()
+    val startOfToday = now.toLocalDate().atStartOfDay().toMillis()
+    val open = sections.sumOf { it.items.size }
+    val overdue = sections.firstOrNull { it.title == "Overdue" }?.items?.size ?: 0
+    val doneToday = items.count { it.done && it.doneAt >= startOfToday }
+    val greeting = when {
+        now.hour < 12 -> "Good morning"
+        now.hour < 18 -> "Good afternoon"
+        else -> "Good evening"
+    }
+    Column {
+        Text(
+            now.format(DateTimeFormatter.ofPattern("EEEE d MMMM")),
+            style = MaterialTheme.typography.labelLarge,
+            color = scheme.onSurfaceVariant
+        )
+        Text(greeting, style = MaterialTheme.typography.headlineMedium, color = scheme.onBackground)
+        Spacer(Modifier.height(14.dp))
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp))
+                .background(scheme.primary)
+                .padding(18.dp)
+        ) {
+            Text(
+                if (open == 0) "Nothing left for today" else "$open left for today",
+                style = MaterialTheme.typography.titleLarge,
+                color = scheme.onPrimary
+            )
+            Text(
+                (if (overdue > 0) "$overdue overdue · " else "") + "$doneToday done today",
+                style = MaterialTheme.typography.bodyMedium,
+                color = scheme.onPrimary.copy(alpha = 0.8f)
+            )
+            Spacer(Modifier.height(12.dp))
+            val total = open + doneToday
+            LinearProgressIndicator(
+                progress = { if (total == 0) 0f else doneToday.toFloat() / total.toFloat() },
+                modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)),
+                color = scheme.onPrimary,
+                trackColor = scheme.onPrimary.copy(alpha = 0.25f),
+            )
+        }
+    }
+}
+
+@Composable
+fun EverythingHeader(items: List<Item>) {
+    val scheme = MaterialTheme.colorScheme
+    Column {
+        Text(
+            "${items.count { !it.done }} open · ${items.count { it.done }} done",
+            style = MaterialTheme.typography.labelLarge,
+            color = scheme.onSurfaceVariant
+        )
+        Text("Everything", style = MaterialTheme.typography.headlineMedium, color = scheme.onBackground)
+    }
+}
+
+@Composable
+fun SectionHeader(title: String, count: Int, urgent: Boolean) {
+    val scheme = MaterialTheme.colorScheme
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(top = 10.dp, start = 4.dp)
+    ) {
+        Text(
+            title.uppercase(),
+            style = MaterialTheme.typography.labelLarge,
+            color = if (urgent) scheme.error else scheme.onSurfaceVariant
+        )
+        Spacer(Modifier.width(8.dp))
+        Pill(
+            count.toString(),
+            if (urgent) scheme.errorContainer else scheme.surfaceVariant,
+            if (urgent) scheme.onErrorContainer else scheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+fun EmptyState(today: Boolean) {
+    val scheme = MaterialTheme.colorScheme
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.fillMaxWidth().padding(top = 48.dp)
+    ) {
+        Box(
+            Modifier.size(64.dp).clip(CircleShape).background(scheme.tertiaryContainer),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Default.Check, contentDescription = null, tint = scheme.onTertiaryContainer)
+        }
+        Spacer(Modifier.height(14.dp))
+        Text(if (today) "All clear" else "Nothing here yet", style = MaterialTheme.typography.titleLarge)
+        Text(
+            "Tap Add and type a line, like \"dentist thursday 3pm\".",
+            style = MaterialTheme.typography.bodyMedium,
+            color = scheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+fun Pill(text: String, container: Color, content: Color, onClick: (() -> Unit)? = null) {
+    val shaped = Modifier.clip(RoundedCornerShape(50)).background(container)
+    val mod = if (onClick != null) shaped.clickable(onClick = onClick) else shaped
+    Text(
+        text,
+        color = content,
+        style = MaterialTheme.typography.labelMedium,
+        maxLines = 1,
+        modifier = mod.padding(horizontal = 10.dp, vertical = 5.dp)
+    )
+}
+
+@Composable
 fun ItemCard(
     item: Item,
     onDone: (Item) -> Unit,
@@ -273,47 +397,118 @@ fun ItemCard(
     onEdit: (Item) -> Unit,
     onFirstStep: (Item, String) -> Unit,
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 4.dp)) {
-            Text(item.title, style = MaterialTheme.typography.titleMedium)
-            val meta = ArrayList<String>()
-            meta.add(typeLabel(item.type))
-            if (item.type != TYPE_NOTE) meta.add(formatWhen(item))
-            if (item.type == TYPE_TASK && item.startBy > 0 && !item.done) meta.add("start " + formatDay(item.startBy))
-            if (item.critical) meta.add("critical")
-            if (item.rescheduleCount > 0) meta.add("moved " + item.rescheduleCount + " times")
-            Text(meta.joinToString(" · "), style = MaterialTheme.typography.bodySmall)
-
-            if (item.firstStep.isNotBlank()) {
-                Text("First step: " + item.firstStep, style = MaterialTheme.typography.bodyMedium)
+    val scheme = MaterialTheme.colorScheme
+    val nowMs = System.currentTimeMillis()
+    val overdue = !item.done && item.dueAt in 1 until nowMs
+    val slipping = !item.done && item.rescheduleCount >= SLIPPING_AFTER
+    val accent = when {
+        item.done -> scheme.tertiary
+        overdue || item.critical -> scheme.error
+        item.type == TYPE_REMINDER -> scheme.primary
+        item.type == TYPE_TASK -> scheme.secondary
+        else -> scheme.outline
+    }
+    Card(
+        onClick = { onEdit(item) },
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = scheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .drawBehind { drawRect(accent, size = Size(5.dp.toPx(), size.height)) }
+                .padding(start = 13.dp, end = 14.dp, top = 10.dp, bottom = 12.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            if (item.type != TYPE_NOTE) {
+                Box(
+                    Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .clickable { if (item.done) onReopen(item) else onDone(item) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        Modifier
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .then(if (item.done) Modifier.background(accent) else Modifier.border(2.dp, accent, CircleShape)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (item.done) {
+                            Icon(
+                                Icons.Default.Check,
+                                contentDescription = "Reopen",
+                                tint = scheme.onTertiary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.width(6.dp))
+            } else {
+                Spacer(Modifier.width(8.dp))
             }
-            val slipping = !item.done && item.rescheduleCount >= SLIPPING_AFTER
-            if (slipping && item.firstStep.isBlank()) {
-                var step by remember(item.id) { mutableStateOf("") }
+            Column(Modifier.weight(1f).padding(top = 8.dp)) {
                 Text(
-                    "This keeps moving. What is a first step of ten minutes or less?",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(top = 4.dp)
+                    item.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = if (item.done) scheme.onSurfaceVariant else scheme.onSurface,
+                    textDecoration = if (item.done) TextDecoration.LineThrough else null
                 )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        value = step,
-                        onValueChange = { step = it },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f)
+                val whenText = if (item.type == TYPE_NOTE) "Note" else typeLabel(item.type) + " · " + formatWhen(item)
+                Text(
+                    whenText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (overdue) scheme.error else scheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+                if (item.firstStep.isNotBlank() && !item.done) {
+                    Text(
+                        "First step: " + item.firstStep,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(top = 6.dp)
                     )
-                    TextButton(onClick = { if (step.isNotBlank()) onFirstStep(item, step) }) { Text("Save") }
                 }
-            }
-            Row {
-                if (item.done) {
-                    TextButton(onClick = { onReopen(item) }) { Text("Reopen") }
-                } else if (item.type != TYPE_NOTE) {
-                    TextButton(onClick = { onDone(item) }) { Text("Done") }
-                    TextButton(onClick = { onMove(item) }) { Text("New time") }
+                if (slipping && item.firstStep.isBlank()) {
+                    var step by remember(item.id) { mutableStateOf("") }
+                    Text(
+                        "This keeps moving. What is a first step of ten minutes or less?",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = scheme.error,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = step,
+                            onValueChange = { step = it },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = { if (step.isNotBlank()) onFirstStep(item, step) }) { Text("Save") }
+                    }
                 }
-                TextButton(onClick = { onEdit(item) }) { Text("Edit") }
+                if (!item.done && item.type != TYPE_NOTE) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.padding(top = 8.dp).horizontalScroll(rememberScrollState())
+                    ) {
+                        Pill("New time", scheme.surfaceVariant, scheme.onSurface) { onMove(item) }
+                        if (item.type == TYPE_TASK && item.startBy > 0) {
+                            Pill("Start " + formatDay(item.startBy), scheme.secondaryContainer, scheme.onSecondaryContainer)
+                        }
+                        if (item.critical) Pill("Critical", scheme.errorContainer, scheme.onErrorContainer)
+                        if (item.rescheduleCount > 0) {
+                            Pill(
+                                "Moved " + item.rescheduleCount + "×",
+                                if (slipping) scheme.errorContainer else scheme.surfaceVariant,
+                                if (slipping) scheme.onErrorContainer else scheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -400,7 +595,8 @@ fun EditorDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (existing == null) "Add" else "Edit") },
+        shape = RoundedCornerShape(24.dp),
+        title = { Text(if (existing == null) "New entry" else "Edit") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
@@ -424,7 +620,11 @@ fun EditorDialog(
                             }
                         }) { Text("Speak") }
                         if (text.isNotBlank()) {
-                            Text("Saved as: " + parsed.title, style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                "Saved as: " + parsed.title,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 }
